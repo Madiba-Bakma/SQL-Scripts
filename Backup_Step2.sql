@@ -1,9 +1,7 @@
 /* ================================================================
-   STEP 2: Backup specific databases + FINAL REPORT
+   STEP 2: Backup specific databases + FINAL REPORT (includes OFFLINE)
    - Uses per-database folders already created
-   - FULL for all
-   - LOG (optional) only for FULL/BULK_LOGGED
-   - Final summary report at the end
+   - Reports NOT_FOUND / OFFLINE / READ_ONLY / FULL / LOG
    ================================================================ */
 
 SET NOCOUNT ON;
@@ -22,23 +20,74 @@ DECLARE @Stamp CHAR(15) =
     REPLACE(CONVERT(CHAR(8), GETDATE(), 108), ':', '');
 
 --------------------------------------------------------------------
+-- REQUESTED LIST
+--------------------------------------------------------------------
+DECLARE @Wanted TABLE (DatabaseName SYSNAME PRIMARY KEY);
+
+INSERT INTO @Wanted(DatabaseName)
+SELECT DISTINCT LTRIM(RTRIM(value))
+FROM STRING_SPLIT(@DbListCsv, ',')
+WHERE LTRIM(RTRIM(value)) <> '';
+
+--------------------------------------------------------------------
+-- METADATA (LEFT JOIN so NOT_FOUND is captured)
+--------------------------------------------------------------------
+DECLARE @Meta TABLE
+(
+    DatabaseName SYSNAME PRIMARY KEY,
+    StateDesc    NVARCHAR(60) NULL,
+    IsReadOnly   BIT NULL,
+    Recovery     NVARCHAR(60) NULL
+);
+
+INSERT INTO @Meta(DatabaseName, StateDesc, IsReadOnly, Recovery)
+SELECT
+    w.DatabaseName,
+    d.state_desc,
+    d.is_read_only,
+    d.recovery_model_desc
+FROM @Wanted w
+LEFT JOIN sys.databases d
+    ON d.name = w.DatabaseName;
+
+--------------------------------------------------------------------
 -- REPORT TABLE
 --------------------------------------------------------------------
 DECLARE @Report TABLE
 (
     DatabaseName SYSNAME,
-    Recovery     NVARCHAR(60),
-    Action       NVARCHAR(20),        -- FULL / LOG / ERROR
-    BackupFile   NVARCHAR(4000),
-    StartTime    DATETIME2(0),
-    EndTime      DATETIME2(0),
-    DurationSec  INT,
+    Recovery     NVARCHAR(60) NULL,
+    Action       NVARCHAR(20),        -- NOT_FOUND / OFFLINE / READ_ONLY / FULL / LOG
     Succeeded    BIT,
-    ErrorMessage NVARCHAR(4000)
+    DurationSec  INT NULL,
+    BackupFile   NVARCHAR(4000) NULL,
+    StartTime    DATETIME2(0) NULL,
+    EndTime      DATETIME2(0) NULL,
+    ErrorMessage NVARCHAR(4000) NULL
 );
 
+-- NOT FOUND
+INSERT INTO @Report (DatabaseName, Recovery, Action, Succeeded, ErrorMessage)
+SELECT DatabaseName, Recovery, 'NOT_FOUND', 0, N'Database name not found on this instance.'
+FROM @Meta
+WHERE StateDesc IS NULL;
+
+-- OFFLINE (includes RESTORING, RECOVERING, SUSPECT, etc.)
+INSERT INTO @Report (DatabaseName, Recovery, Action, Succeeded, ErrorMessage)
+SELECT DatabaseName, Recovery, 'OFFLINE', 0, CONCAT(N'Database state: ', StateDesc)
+FROM @Meta
+WHERE StateDesc IS NOT NULL
+  AND StateDesc <> 'ONLINE';
+
+-- READ ONLY
+INSERT INTO @Report (DatabaseName, Recovery, Action, Succeeded, ErrorMessage)
+SELECT DatabaseName, Recovery, 'READ_ONLY', 0, N'Database is read-only.'
+FROM @Meta
+WHERE StateDesc = 'ONLINE'
+  AND IsReadOnly = 1;
+
 --------------------------------------------------------------------
--- TARGET DATABASES
+-- TARGETS WE CAN ACTUALLY BACK UP
 --------------------------------------------------------------------
 DECLARE @Targets TABLE
 (
@@ -47,19 +96,20 @@ DECLARE @Targets TABLE
 );
 
 INSERT INTO @Targets(DatabaseName, Recovery)
-SELECT d.name, d.recovery_model_desc
-FROM sys.databases d
-JOIN (
-    SELECT DISTINCT LTRIM(RTRIM(value)) AS name
-    FROM STRING_SPLIT(@DbListCsv, ',')
-    WHERE LTRIM(RTRIM(value)) <> ''
-) x ON x.name = d.name
-WHERE d.state_desc = 'ONLINE'
-AND d.is_read_only = 0;
+SELECT DatabaseName, Recovery
+FROM @Meta
+WHERE StateDesc = 'ONLINE'
+  AND IsReadOnly = 0;
 
 IF NOT EXISTS (SELECT 1 FROM @Targets)
 BEGIN
-    RAISERROR('No valid ONLINE writable databases found.', 16, 1);
+    PRINT 'No ONLINE writable databases to back up. Returning report.';
+    SELECT
+        DatabaseName, Recovery, Action, Succeeded, DurationSec, BackupFile, StartTime, EndTime, ErrorMessage
+    FROM @Report
+    ORDER BY DatabaseName,
+             CASE Action WHEN 'NOT_FOUND' THEN 0 WHEN 'OFFLINE' THEN 1 WHEN 'READ_ONLY' THEN 2
+                         WHEN 'FULL' THEN 3 WHEN 'LOG' THEN 4 ELSE 5 END;
     RETURN;
 END;
 
@@ -86,8 +136,7 @@ BEGIN
 
     SET @Sql = N'BACKUP DATABASE ' + QUOTENAME(@Db) +
                N' TO DISK = ' + QUOTENAME(@File,'''') +
-               N' WITH COMPRESSION, CHECKSUM, INIT, STATS = ' +
-               CAST(@Stats AS NVARCHAR(10));
+               N' WITH COMPRESSION, CHECKSUM, INIT, STATS = ' + CAST(@Stats AS NVARCHAR(10));
 
     SET @Start = SYSDATETIME();
 
@@ -96,16 +145,13 @@ BEGIN
         SET @End = SYSDATETIME();
 
         INSERT INTO @Report
-        VALUES (@Db, @Recovery, 'FULL', @File,
-                @Start, @End, DATEDIFF(SECOND,@Start,@End), 1, NULL);
+        VALUES (@Db, @Recovery, 'FULL', 1, DATEDIFF(SECOND,@Start,@End), @File, @Start, @End, NULL);
     END TRY
     BEGIN CATCH
         SET @End = SYSDATETIME();
 
         INSERT INTO @Report
-        VALUES (@Db, @Recovery, 'FULL', @File,
-                @Start, @End, DATEDIFF(SECOND,@Start,@End),
-                0, ERROR_MESSAGE());
+        VALUES (@Db, @Recovery, 'FULL', 0, DATEDIFF(SECOND,@Start,@End), @File, @Start, @End, ERROR_MESSAGE());
     END CATCH;
 
     FETCH NEXT FROM cur_full INTO @Db, @Recovery;
@@ -115,7 +161,7 @@ CLOSE cur_full;
 DEALLOCATE cur_full;
 
 --------------------------------------------------------------------
--- LOG BACKUPS (optional)
+-- LOG BACKUPS (optional, only FULL/BULK_LOGGED)
 --------------------------------------------------------------------
 IF @DoLogBackups = 1
 BEGIN
@@ -134,8 +180,7 @@ BEGIN
 
         SET @Sql = N'BACKUP LOG ' + QUOTENAME(@Db) +
                    N' TO DISK = ' + QUOTENAME(@File,'''') +
-                   N' WITH COMPRESSION, CHECKSUM, INIT, STATS = ' +
-                   CAST(@Stats AS NVARCHAR(10));
+                   N' WITH COMPRESSION, CHECKSUM, INIT, STATS = ' + CAST(@Stats AS NVARCHAR(10));
 
         SET @Start = SYSDATETIME();
 
@@ -144,16 +189,13 @@ BEGIN
             SET @End = SYSDATETIME();
 
             INSERT INTO @Report
-            VALUES (@Db, @Recovery, 'LOG', @File,
-                    @Start, @End, DATEDIFF(SECOND,@Start,@End), 1, NULL);
+            VALUES (@Db, @Recovery, 'LOG', 1, DATEDIFF(SECOND,@Start,@End), @File, @Start, @End, NULL);
         END TRY
         BEGIN CATCH
             SET @End = SYSDATETIME();
 
             INSERT INTO @Report
-            VALUES (@Db, @Recovery, 'LOG', @File,
-                    @Start, @End, DATEDIFF(SECOND,@Start,@End),
-                    0, ERROR_MESSAGE());
+            VALUES (@Db, @Recovery, 'LOG', 0, DATEDIFF(SECOND,@Start,@End), @File, @Start, @End, ERROR_MESSAGE());
         END CATCH;
 
         FETCH NEXT FROM cur_log INTO @Db, @Recovery;
@@ -164,7 +206,7 @@ BEGIN
 END;
 
 --------------------------------------------------------------------
--- FINAL CLEAN REPORT
+-- FINAL REPORT (clean)
 --------------------------------------------------------------------
 PRINT '================ FINAL BACKUP REPORT ================';
 
@@ -179,4 +221,13 @@ SELECT
     EndTime,
     ErrorMessage
 FROM @Report
-ORDER BY DatabaseName, Action;
+ORDER BY
+    DatabaseName,
+    CASE Action
+        WHEN 'NOT_FOUND' THEN 0
+        WHEN 'OFFLINE'   THEN 1
+        WHEN 'READ_ONLY' THEN 2
+        WHEN 'FULL'      THEN 3
+        WHEN 'LOG'       THEN 4
+        ELSE 5
+    END;
