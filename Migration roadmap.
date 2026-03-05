@@ -1,0 +1,15 @@
+ON SOURCE
+
+Run Script 1
+Run Script 2
+Run Script 3
+Save results
+Take Backup
+
+
+ON TARGET
+
+Execute login script
+Restore databases
+Execute user script
+Execute permission script
