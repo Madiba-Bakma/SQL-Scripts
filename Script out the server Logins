@@ -1,0 +1,7 @@
+SELECT
+'CREATE LOGIN [' + name + '] 
+WITH PASSWORD = 0x' + CONVERT(VARCHAR(MAX), password_hash, 2) + ' HASHED,
+CHECK_POLICY = OFF;' AS LoginScript
+FROM sys.sql_logins
+WHERE is_disabled = 0
+AND name NOT LIKE '##%';
