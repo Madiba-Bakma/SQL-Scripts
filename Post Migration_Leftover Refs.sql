@@ -1,9 +1,7 @@
-BEGIN TRY
-  BEGIN TRAN;
 /*==============================================================
   FULL SWEEP FOR LEFTOVER REFERENCES (Compat-safe; no STRING_SPLIT/CONCAT)
   Environment: SQL Server 2019 (works across lower compat levels too)
-  Author: Madiba
+  Author: Madiba + Copilot
 
   Terms are searched literally (curly braces included).
 ================================================================*/
@@ -17,14 +15,14 @@ IF OBJECT_ID('tempdb..##Terms') IS NOT NULL DROP TABLE ##Terms;
 CREATE TABLE ##Terms (Term NVARCHAR(200) NOT NULL);
 
 INSERT INTO ##Terms (Term) VALUES
-(N'x'),
-(N'x'),
-(N'x'),
-(N'x'),
-(N'x'),
-(N'x');
+(N''),
+(N''),
+(N''),
+(N''),
+(N''),
+(N'');
 
-PRINT N'Using search terms: ;
+PRINT N'Using search terms: {10.230.140.7} | {10.230.180.4} | esql | efile | EJM01.esos.ad | EJM01';
 
 /*==============================================================
   1) OBJECT DEFINITIONS (procs, views, functions, triggers) + SYNONYMS
@@ -439,13 +437,4 @@ PRINT '========= SERVER-LEVEL EXTRAS =========';
 SELECT * FROM #ServerLevelHits
 ORDER BY ObjectType, ObjectName, HitTerm;
 
--- (Temp tables will be dropped when the session ends)ds)
-
-
-ROLLBACK TRAN;  -- simulate only
-  PRINT 'Dry run successful: job creation rolled back.';
-END TRY
-BEGIN CATCH
-  IF XACT_STATE() <> 0 ROLLBACK TRAN;
-  PRINT 'Dry run failed: ' + ERROR_MESSAGE();
-END CATCH;
+-- (Temp tables will be dropped when the session ends)
