@@ -1,7 +1,7 @@
 /*==============================================================
   FULL SWEEP FOR LEFTOVER REFERENCES (Compat-safe; no STRING_SPLIT/CONCAT)
   Environment: SQL Server 2019 (works across lower compat levels too)
-  Author: Madiba + Copilot
+  Author: Madiba 
 
   Terms are searched literally (curly braces included).
 ================================================================*/
