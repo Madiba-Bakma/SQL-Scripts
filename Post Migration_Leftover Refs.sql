@@ -22,7 +22,7 @@ INSERT INTO ##Terms (Term) VALUES
 (N''),
 (N'');
 
-PRINT N'Using search terms: {10.230.140.7} | {10.230.180.4} | esql | efile | EJM01.esos.ad | EJM01';
+PRINT N'Using your defined search terms';
 
 /*==============================================================
   1) OBJECT DEFINITIONS (procs, views, functions, triggers) + SYNONYMS
